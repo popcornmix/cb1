@@ -27,7 +27,9 @@ static inline bool dvbridge_dv_source_transport(const AVDOVIMetadata *m)
 {
     const AVDOVIColorMetadata *c=av_dovi_get_color(m);
     const AVDOVIRpuDataHeader *h=av_dovi_get_header(m);
-    if (h->vdr_bit_depth!=12 || c->signal_bit_depth!=12 || c->signal_color_space ||
+    /* YCbCr carries a 1/16 luma offset, IPT (profile 5) none. */
+    const bool ipt=c->signal_color_space==2;
+    if (h->vdr_bit_depth!=12 || c->signal_bit_depth!=12 || (c->signal_color_space && !ipt) ||
         c->signal_chroma_format || c->signal_full_range_flag!=1 || c->signal_eotf!=65535 ||
         c->signal_eotf_param0 || c->signal_eotf_param1 || c->signal_eotf_param2) return false;
     for (int i=0;i<9;i++)
@@ -35,7 +37,7 @@ static inline bool dvbridge_dv_source_transport(const AVDOVIMetadata *m)
             !dvbridge_dv_wire_rational(c->rgb_to_lms_matrix[i],16384,INT16_MIN,INT16_MAX)) return false;
     for (int i=0;i<3;i++) {
         AVRational a=c->ycc_to_rgb_offset[i];
-        if (a.den<=0 || (int64_t)a.num*(i?2:16)!=a.den) return false;
+        if (a.den<=0 || (i || !ipt ? (int64_t)a.num*(i?2:16)!=a.den : a.num!=0)) return false;
     }
     /* Singular matrices cannot describe a reversible source colour volume. */
     const AVRational *matrices[]={c->ycc_to_rgb_matrix,c->rgb_to_lms_matrix};
@@ -166,13 +168,18 @@ static inline bool dvbridge_dv_metadata_output(struct dvbridge_dv *d, const AVDO
         (uint16_t)((int64_t)c->ycc_to_rgb_matrix[i].num*8192/c->ycc_to_rgb_matrix[i].den) :
         (uint16_t)(
             dvbridge_output_ycc[i]));
-    dvbridge_dv_u32(d, 16777216); dvbridge_dv_u32(d, 134217728); dvbridge_dv_u32(d, 134217728);
+    /* Source transport carries the source signal, so it keeps the source offsets (IPT has no
+     * luma offset); the canonical output is YCbCr with 1/16, 1/2, 1/2. */
+    for (int i = 0; i < 3; i++) dvbridge_dv_u32(d, d->source_transport ?
+        (uint32_t)((int64_t)c->ycc_to_rgb_offset[i].num * 268435456 / c->ycc_to_rgb_offset[i].den) :
+        (i ? 134217728u : 16777216u));
     for (int i = 0; i < 9; i++) dvbridge_dv_u16(d, d->source_transport ?
         (uint16_t)((int64_t)c->rgb_to_lms_matrix[i].num*16384/c->rgb_to_lms_matrix[i].den) :
         (
             dvbridge_output_lms[i]));
     dvbridge_dv_u16(d, 65535); dvbridge_dv_u32(d, 0); dvbridge_dv_u32(d, 0);
-    d->payload[d->size++] = 12; d->payload[d->size++] = 0;
+    d->payload[d->size++] = 12;
+    d->payload[d->size++] = d->source_transport ? c->signal_color_space : 0;
     d->payload[d->size++] = 1; d->payload[d->size++] = 1;
     dvbridge_dv_u16(d, c->source_min_pq); dvbridge_dv_u16(d, c->source_max_pq);
     dvbridge_dv_u16(d, d->source_transport ? c->source_diagonal : 42);

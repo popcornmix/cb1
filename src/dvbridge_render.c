@@ -817,7 +817,7 @@ struct active_mask {
     uint32_t count, flip;
     pl_shader native_shader;
     bool early_mask, source_domain, source_overlay, straight_overlay, linear_output;
-    bool reference_transport;
+    bool reference_transport, source_ipt;
     pl_tex reference_target;
     pl_tex scaled_reference;
     float scaled_rect[4];
@@ -951,7 +951,7 @@ static struct pl_hook_res pack_active_area(void *priv, const struct pl_hook_para
         mask->straight_overlay ? "#define CB1_STRAIGHT_OVERLAY 1\n" : "",
         mask->reference_transport ? "#define CB1_REFERENCE_TRANSPORT 1\n" : "",
         mask->scaled_reference ? "#define CB1_SCALED_REFERENCE 1\n" : "",
-        "", ""
+        mask->source_ipt ? "#define CB1_SOURCE_BLACK 0.0\n" : "#define CB1_SOURCE_BLACK .0625\n", ""
     );
     struct pl_custom_shader shader = {
         .prelude=(mask->ai_renderer || mask->reference_transport) ? NULL : "#extension GL_KHR_shader_subgroup_basic : require\n"
@@ -971,13 +971,13 @@ static struct pl_hook_res pack_active_area(void *priv, const struct pl_hook_para
         "bool inactive=float(p.x)<active_area.x || float(p.x)>=active_area.z || float(p.y)<active_area.y || float(p.y)>=active_area.w;\n"
         "vec3 self_rgb=vec3(0); bool compose=false; vec4 gui=vec4(0);\n"
         "#ifdef CB1_SOURCE_DOMAIN\n"
-        "if(inactive) color=vec4(.0625,.5,.5,1.0);\n"
+        "if(inactive) color=vec4(CB1_SOURCE_BLACK,.5,.5,1.0);\n"
         "vec3 self_ycc=clamp(color.rgb,0.0,1.0);\n"
         "vec3 peer_ycc;\n"
         "#ifdef CB1_SCALED_REFERENCE\n"
         "vec2 peer_pos=vec2(p^ivec2(1,0))+.5;\n"
         "peer_ycc=clamp(texelFetch(scaled_reference,ivec2(scaled_rect.xy+peer_pos*scaled_rect.zw),0).rgb,0.0,1.0);\n"
-        "if(inactive)peer_ycc=vec3(.0625,.5,.5);\n"
+        "if(inactive)peer_ycc=vec3(CB1_SOURCE_BLACK,.5,.5);\n"
         "#elif defined(CB1_REFERENCE_TRANSPORT)\n"
         "peer_ycc=self_ycc;\n"
         "#elif !defined(CB1_SOURCE_OVERLAY)\n"
@@ -1560,6 +1560,7 @@ static bool render(struct dvbridge_renderer *r, const struct pl_frame *source,
         }
     }
     mask.source_domain=source_transport || canonical_transport;
+    mask.source_ipt=source_transport && av_dovi_get_color((const AVDOVIMetadata*)metadata)->signal_color_space==2;
     if(overlay && mask.source_domain) {
         struct pl_color_repr post=mapped.repr;
         pl_color_repr_normalize(&post);
